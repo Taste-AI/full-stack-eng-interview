@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
 import { Search, X, ArrowUpRight } from "lucide-react";
+import { LeftSidebar } from "./LeftSidebar";
 
 interface Website {
   url: string;
   captureSuccess: boolean;
   descriptionSuccess: boolean;
   screenshotPath?: string;
+  tags?: string[];
   metadata?: {
     title: string;
     h1s: string[];
@@ -29,6 +31,7 @@ function App() {
   const [selectedWebsite, setSelectedWebsite] = useState<Website | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
   useEffect(() => {
     // Load results.json
@@ -49,33 +52,68 @@ function App() {
       });
   }, []);
 
+  // Debounced CLIP search
   useEffect(() => {
-    // Real-time search filtering
-    if (!searchQuery.trim()) {
-      setFilteredWebsites(websites);
-      return;
-    }
+    const performSearch = async () => {
+      let filtered = websites;
 
-    const query = searchQuery.toLowerCase();
-    const filtered = websites.filter((website) => {
-      const searchableText = [
-        website.url,
-        website.description?.pageDescription,
-        website.description?.style,
-        website.description?.audience,
-        website.description?.pageType,
-        website.description?.layoutStyle,
-        website.description?.intent,
-        ...(website.description?.detectedFonts || []),
-      ]
-        .join(" ")
-        .toLowerCase();
+      // First filter by tags (AND logic - must have all selected tags)
+      if (selectedTags.length > 0) {
+        filtered = filtered.filter((website) =>
+          selectedTags.every((tag) => website.tags?.includes(tag))
+        );
+      }
 
-      return searchableText.includes(query);
-    });
+      // Then search with CLIP if query exists
+      if (searchQuery.trim()) {
+        setSearching(true);
+        try {
+          const response = await fetch('http://localhost:8000/search-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: searchQuery })
+          });
+          
+          const data = await response.json();
+          
+          if (data.success) {
+            // Map CLIP results back to full website objects
+            const resultUrls = new Set(data.results.map((r: any) => r.url));
+            filtered = filtered.filter(w => resultUrls.has(w.url));
+            
+            // Sort by CLIP similarity order
+            const urlToSimilarity = new Map(
+              data.results.map((r: any) => [r.url, r.similarity])
+            );
+            filtered.sort((a, b) => 
+              (urlToSimilarity.get(b.url) || 0) - (urlToSimilarity.get(a.url) || 0)
+            );
+          }
+        } catch (error) {
+          console.error('CLIP search failed, falling back to local search:', error);
+          // Fallback to simple text search
+          const query = searchQuery.toLowerCase();
+          filtered = filtered.filter((website) => {
+            const searchableText = [
+              website.url,
+              website.description?.pageDescription,
+              website.description?.style,
+              website.description?.audience,
+              ...(website.tags || []),
+            ].join(" ").toLowerCase();
+            return searchableText.includes(query);
+          });
+        }
+        setSearching(false);
+      }
 
-    setFilteredWebsites(filtered);
-  }, [searchQuery, websites]);
+      setFilteredWebsites(filtered);
+    };
+
+    // Debounce search
+    const timeoutId = setTimeout(performSearch, 500);
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery, websites, selectedTags]);
 
   // Escape key closes modal
   useEffect(() => {
@@ -103,6 +141,14 @@ function App() {
     } catch {
       return url;
     }
+  };
+
+  const toggleTag = (tag: string) => {
+    setSelectedTags(prev =>
+      prev.includes(tag)
+        ? prev.filter(t => t !== tag)
+        : [...prev, tag]
+    );
   };
 
   if (loading) {
@@ -145,17 +191,52 @@ function App() {
                   }}
                 />
                 <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-4">
+                  {searching && (
+                    <span className="text-neutral-400 text-xs">Searching...</span>
+                  )}
                   <label className="cursor-pointer text-black hover:text-neutral-400 transition-colors text-sm">
                     add an image
                     <input
                       type="file"
                       accept="image/*"
                       className="hidden"
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          // TODO: Implement image search
-                          alert("Image search coming soon!");
+                          setSearching(true);
+                          setSearchQuery(`Searching by image: ${file.name}`);
+                          
+                          try {
+                            const formData = new FormData();
+                            formData.append('image', file);
+                            
+                            const response = await fetch('http://localhost:8000/search-image', {
+                              method: 'POST',
+                              body: formData
+                            });
+                            
+                            const data = await response.json();
+                            
+                            if (data.success) {
+                              // Map results back to full website objects
+                              const resultUrls = new Set(data.results.map((r: any) => r.url));
+                              let filtered = websites.filter(w => resultUrls.has(w.url));
+                              
+                              // Sort by similarity
+                              const urlToSimilarity = new Map(
+                                data.results.map((r: any) => [r.url, r.similarity])
+                              );
+                              filtered.sort((a, b) => 
+                                (urlToSimilarity.get(b.url) || 0) - (urlToSimilarity.get(a.url) || 0)
+                              );
+                              
+                              setFilteredWebsites(filtered);
+                            }
+                          } catch (error) {
+                            console.error('Image search failed:', error);
+                            alert('Image search failed. Make sure the backend is running.');
+                          }
+                          setSearching(false);
                         }
                       }}
                     />
@@ -185,48 +266,63 @@ function App() {
         </div>
       </div>
 
-      {/* Grid - add top padding to account for fixed header */}
-      <main className="max-w-7xl mx-auto px-6 py-8 pt-24">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredWebsites.map((website) => (
-            <div
-              key={website.url}
-              className="group relative overflow-hidden  hover:-translate-y-1 transition-all duration-200 cursor-pointer w-full shadow-sm hover:shadow-xl"
-              onClick={() => setSelectedWebsite(website)}
-            >
-              <div className="aspect-video w-full relative">
-                <img
-                  src={getThumbnailPath(website.screenshotPath!)}
-                  alt={getWebsiteName(website.url)}
-                  className="w-full h-full object-cover"
-                  loading="lazy"
-                />
-                {/* Overlay on hover */}
-                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all duration-200 flex items-end justify-center pb-6">
-                  <a 
-                    href={website.url} 
-                    target="_blank" 
-                    rel="noopener noreferrer" 
-                    className="whitespace-nowrap flex items-center gap-1 text-white font-medium text-lg opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0 transition-all duration-200 border-b border-transparent hover:border-white"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {getWebsiteName(website.url)}
-                    <ArrowUpRight className="w-5 h-5" />
-                  </a>
-                </div>
-              </div>
-            </div>
-          ))}
+      {/* Main content with sidebar */}
+      <div className="pt-[52px] flex">
+        {/* Left Sidebar */}
+
+      <div className="fixed left-0 top-[68px] w-full h-full hidden md:block">
+        <LeftSidebar
+          websites={websites}
+          selectedTags={selectedTags}
+          onTagToggle={toggleTag}
+        />
         </div>
 
-        {filteredWebsites.length === 0 && (
-          <div className="text-center py-16">
-            <p className="text-neutral-600 text-lg">
-              No websites found matching "{searchQuery}"
-            </p>
-          </div>
-        )}
-      </main>
+        {/* Main Content Area */}
+        <main className="flex-1 px-8 py-6 md:ml-[25%] ml-[0%] transition-margin duration-300">
+         
+
+          {filteredWebsites.length === 0 ? (
+            <div className="text-center py-16">
+              <p className="text-neutral-600 text-lg">
+                {searchQuery ? `No websites found matching "${searchQuery}"` : 'No websites match the selected filters'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredWebsites.map((website) => (
+                <div
+                  key={website.url}
+                  className="group relative overflow-hidden  hover:-translate-y-1 transition-all duration-200 cursor-pointer w-full shadow-sm hover:shadow-xl"
+                  onClick={() => setSelectedWebsite(website)}
+                >
+                  <div className="aspect-video w-full relative">
+                    <img
+                      src={getThumbnailPath(website.screenshotPath!)}
+                      alt={getWebsiteName(website.url)}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                    />
+                    {/* Overlay on hover */}
+                    <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all duration-200 flex items-end justify-center pb-6">
+                      <a 
+                        href={website.url} 
+                        target="_blank" 
+                        rel="noopener noreferrer" 
+                        className="whitespace-nowrap flex items-center gap-1 text-white font-medium text-lg opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0 transition-all duration-200 border-b border-transparent hover:border-white"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {getWebsiteName(website.url)}
+                        <ArrowUpRight className="w-5 h-5" />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </main>
+      </div>
 
       {/* Modal */}
       {selectedWebsite && (
