@@ -5,8 +5,8 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "screenshot": "npm run build && MODE=single node dist/screenshot.js",
-    "screenshot:batch": "npm run build && MODE=batch node dist/screenshot.js",
+    "capture": "npm run build && node dist/capture.js",
+    "pipeline": "npm run build && node dist/pipeline.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -18,5 +18,10 @@
     "@types/node": "^24.10.0",
     "playwright": "^1.56.1",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "dotenv": "^17.2.3",
+    "sharp": "^0.34.5"
   }
 }
