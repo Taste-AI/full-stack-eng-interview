@@ -4,10 +4,19 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "tsc",
+    "screenshot": "npm run build && MODE=single node dist/screenshot.js",
+    "screenshot:batch": "npm run build && MODE=batch node dist/screenshot.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.11.1"
+  "packageManager": "pnpm@10.11.1",
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^24.10.0",
+    "playwright": "^1.56.1",
+    "typescript": "^5.9.3"
+  }
 }
