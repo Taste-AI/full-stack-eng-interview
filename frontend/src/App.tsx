@@ -54,8 +54,10 @@ function App() {
       });
   }, []);
 
-  // Hybrid search: show instant text matches, then add CLIP matches
+  // Hybrid search with request cancellation
   useEffect(() => {
+    const abortController = new AbortController();
+    
     const performSearch = async () => {
       let baseFiltered = websites;
 
@@ -69,6 +71,7 @@ function App() {
       // If no search query and no image, show all (filtered by tags)
       if (!searchQuery.trim() && !uploadedImage) {
         setFilteredWebsites(baseFiltered);
+        setSearching(false);
         return;
       }
 
@@ -97,7 +100,7 @@ function App() {
       
       setSearching(true);
 
-      // 2. Get CLIP semantic matches (async)
+      // 2. Get CLIP semantic matches (async, cancellable)
       try {
         let response;
         
@@ -110,7 +113,8 @@ function App() {
           
           response = await fetch('http://localhost:8000/search-combined', {
             method: 'POST',
-            body: formData
+            body: formData,
+            signal: abortController.signal
           });
         } else if (uploadedImage) {
           // Image only
@@ -120,14 +124,16 @@ function App() {
           
           response = await fetch('http://localhost:8000/search-image', {
             method: 'POST',
-            body: formData
+            body: formData,
+            signal: abortController.signal
           });
         } else {
           // Text only
           response = await fetch('http://localhost:8000/search-text', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: searchQuery })
+            body: JSON.stringify({ query: searchQuery }),
+            signal: abortController.signal
           });
         }
         
@@ -156,17 +162,24 @@ function App() {
         } else {
           setFilteredWebsites(textMatches.length > 0 ? textMatches : baseFiltered);
         }
-      } catch (error) {
-        console.error('CLIP search failed:', error);
-        setFilteredWebsites(textMatches.length > 0 ? textMatches : baseFiltered);
+      } catch (error: any) {
+        // Don't show error if request was aborted
+        if (error.name !== 'AbortError') {
+          console.error('CLIP search failed:', error);
+          setFilteredWebsites(textMatches.length > 0 ? textMatches : baseFiltered);
+        }
       }
       
       setSearching(false);
     };
 
-    // Debounce search
-    const timeoutId = setTimeout(performSearch, 100);
-    return () => clearTimeout(timeoutId);
+    // Minimal debounce (just to batch rapid typing)
+    const timeoutId = setTimeout(performSearch, 15);
+    
+    return () => {
+      clearTimeout(timeoutId);
+      abortController.abort(); // Cancel in-flight request
+    };
   }, [searchQuery, uploadedImage, websites, selectedTags]);
 
   // Escape key closes modal
@@ -266,9 +279,6 @@ function App() {
                   }}
                 />
                 <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-4">
-                  {searching && (
-                    <span className="text-neutral-400 text-xs">Searching...</span>
-                  )}
                   <label className="cursor-pointer text-black hover:text-neutral-400 transition-colors text-sm">
                     {uploadedImage ? "Change image" : "Add an image"}
                     <input
