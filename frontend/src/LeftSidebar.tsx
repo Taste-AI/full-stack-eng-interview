@@ -135,6 +135,17 @@ export function LeftSidebar({ websites, selectedTags, onTagToggle }: LeftSidebar
             </div>
           );
         })}
+
+        {
+          selectedTags.length > 0 && (
+            <button className="mt-4 user-select-none cursor-pointer bg-white border border-e6e6e6 inline-block float-left px-1.5 py-0.5 relative mb-0.4 mr-0.4 text-0.875rem hover:bg-[#e6e6e6]"
+            onClick={() => selectedTags.forEach(tag => onTagToggle(tag))}
+            >
+              Clear all filters
+            </button>
+          )
+        }
+        
       </div>
 
       <style>{`

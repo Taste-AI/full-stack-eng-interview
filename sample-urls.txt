@@ -1,6 +1,0 @@
-https://stripe.com
-https://linear.app
-https://www.apple.com
-https://airbnb.com
-https://github.com
-
