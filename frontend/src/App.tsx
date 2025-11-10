@@ -32,6 +32,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [searching, setSearching] = useState(false);
 
   useEffect(() => {
     // Load results.json
