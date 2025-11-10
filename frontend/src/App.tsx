@@ -33,6 +33,7 @@ function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
+  const [uploadedImage, setUploadedImage] = useState<string | null>(null);
 
   useEffect(() => {
     // Load results.json
@@ -53,68 +54,120 @@ function App() {
       });
   }, []);
 
-  // Debounced CLIP search
+  // Hybrid search: show instant text matches, then add CLIP matches
   useEffect(() => {
     const performSearch = async () => {
-      let filtered = websites;
+      let baseFiltered = websites;
 
-      // First filter by tags (AND logic - must have all selected tags)
+      // First filter by tags
       if (selectedTags.length > 0) {
-        filtered = filtered.filter((website) =>
+        baseFiltered = baseFiltered.filter((website) =>
           selectedTags.every((tag) => website.tags?.includes(tag))
         );
       }
 
-      // Then search with CLIP if query exists
-      if (searchQuery.trim()) {
-        setSearching(true);
-        try {
-          const response = await fetch('http://localhost:8000/search-text', {
+      // If no search query and no image, show all (filtered by tags)
+      if (!searchQuery.trim() && !uploadedImage) {
+        setFilteredWebsites(baseFiltered);
+        return;
+      }
+
+      const query = searchQuery.toLowerCase();
+      
+      // 1. Find exact text matches INSTANTLY (if text exists)
+      const textMatches = searchQuery.trim() ? baseFiltered.filter((website) => {
+        const searchableText = [
+          website.url,
+          website.description?.pageDescription,
+          website.description?.style,
+          website.description?.audience,
+          website.description?.pageType,
+          website.description?.layoutStyle,
+          website.description?.intent,
+          ...(website.description?.detectedFonts || []),
+          ...(website.tags || []),
+        ].join(" ").toLowerCase();
+        return searchableText.includes(query);
+      }) : [];
+
+      // Show instant text matches immediately
+      if (textMatches.length > 0 && !uploadedImage) {
+        setFilteredWebsites(textMatches);
+      }
+      
+      setSearching(true);
+
+      // 2. Get CLIP semantic matches (async)
+      try {
+        let response;
+        
+        if (uploadedImage && searchQuery.trim()) {
+          // Combined: image + text
+          const blob = await fetch(uploadedImage).then(r => r.blob());
+          const formData = new FormData();
+          formData.append('image', blob);
+          formData.append('text_query', searchQuery);
+          
+          response = await fetch('http://localhost:8000/search-combined', {
+            method: 'POST',
+            body: formData
+          });
+        } else if (uploadedImage) {
+          // Image only
+          const blob = await fetch(uploadedImage).then(r => r.blob());
+          const formData = new FormData();
+          formData.append('image', blob);
+          
+          response = await fetch('http://localhost:8000/search-image', {
+            method: 'POST',
+            body: formData
+          });
+        } else {
+          // Text only
+          response = await fetch('http://localhost:8000/search-text', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: searchQuery })
           });
-          
-          const data = await response.json();
-          
-          if (data.success) {
-            // Map CLIP results back to full website objects
-            const resultUrls = new Set(data.results.map((r: any) => r.url));
-            filtered = filtered.filter(w => resultUrls.has(w.url));
-            
-            // Sort by CLIP similarity order
-            const urlToSimilarity = new Map(
-              data.results.map((r: any) => [r.url, r.similarity])
-            );
-            filtered.sort((a, b) => 
-              (urlToSimilarity.get(b.url) || 0) - (urlToSimilarity.get(a.url) || 0)
-            );
-          }
-        } catch (error) {
-          console.error('CLIP search failed, falling back to local search:', error);
-          // Fallback to simple text search
-          const query = searchQuery.toLowerCase();
-          filtered = filtered.filter((website) => {
-            const searchableText = [
-              website.url,
-              website.description?.pageDescription,
-              website.description?.style,
-              website.description?.audience,
-              ...(website.tags || []),
-            ].join(" ").toLowerCase();
-            return searchableText.includes(query);
-          });
         }
-        setSearching(false);
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          const clipResultUrls = new Set(data.results.map((r: any) => r.url));
+          const textMatchUrls = new Set(textMatches.map(w => w.url));
+          
+          // Get CLIP matches that aren't already in text matches
+          const clipOnlyMatches = baseFiltered.filter(w => 
+            clipResultUrls.has(w.url) && !textMatchUrls.has(w.url)
+          );
+          
+          // Sort CLIP matches by similarity
+          const urlToSimilarity = new Map(
+            data.results.map((r: any) => [r.url, r.similarity])
+          );
+          clipOnlyMatches.sort((a, b) => 
+            (urlToSimilarity.get(b.url) || 0) - (urlToSimilarity.get(a.url) || 0)
+          );
+          
+          // Combine: text matches first, then CLIP matches
+          const finalResults = [...textMatches, ...clipOnlyMatches];
+          setFilteredWebsites(finalResults);
+        } else {
+          setFilteredWebsites(textMatches.length > 0 ? textMatches : baseFiltered);
+        }
+      } catch (error) {
+        console.error('CLIP search failed:', error);
+        setFilteredWebsites(textMatches.length > 0 ? textMatches : baseFiltered);
       }
-
-      setFilteredWebsites(filtered);
+      
+      setSearching(false);
     };
 
     // Debounce search
-    const timeoutId = setTimeout(performSearch, 500);
+    const timeoutId = setTimeout(performSearch, 100);
     return () => clearTimeout(timeoutId);
-  }, [searchQuery, websites, selectedTags]);
+  }, [searchQuery, uploadedImage, websites, selectedTags]);
 
   // Escape key closes modal
   useEffect(() => {
@@ -173,14 +226,35 @@ function App() {
             
             {/* Search Bar - expands when open */}
             {searchOpen ? (
-              <div className="flex-1 relative flex items-center h-full">
+              <div className="flex-1 relative flex items-center h-full gap-3">
+                {/* Uploaded image thumbnail */}
+                {uploadedImage && (
+                  <div className="group relative w-auto h-12 flex-shrink-0">
+                    <img 
+                      src={uploadedImage} 
+                      alt="Uploaded" 
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                      onClick={() => {
+                        setUploadedImage(null);
+                        setSearchQuery("");
+                        setFilteredWebsites(websites);
+                      }}
+                    >
+                      <X className="w-4 h-4 text-white" strokeWidth={2} />
+                    </button>
+                  </div>
+                )}
+                
                 <input
                   type="text"
                   placeholder={`Search ${websites.length} websites`}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   autoFocus
-                  className="w-full bg-transparent border-none outline-none text-black placeholder-neutral-300 pr-48"
+                  className="flex-1 bg-transparent border-none outline-none text-black placeholder-neutral-300 pr-48"
                   style={{ 
                     fontFamily: 'Neue Haas Unica, Helvetica, sans-serif',
                     fontWeight: 400,
@@ -196,48 +270,17 @@ function App() {
                     <span className="text-neutral-400 text-xs">Searching...</span>
                   )}
                   <label className="cursor-pointer text-black hover:text-neutral-400 transition-colors text-sm">
-                    add an image
+                    {uploadedImage ? "Change image" : "Add an image"}
                     <input
                       type="file"
                       accept="image/*"
                       className="hidden"
-                      onChange={async (e) => {
+                      onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          setSearching(true);
-                          setSearchQuery(`Searching by image: ${file.name}`);
-                          
-                          try {
-                            const formData = new FormData();
-                            formData.append('image', file);
-                            
-                            const response = await fetch('http://localhost:8000/search-image', {
-                              method: 'POST',
-                              body: formData
-                            });
-                            
-                            const data = await response.json();
-                            
-                            if (data.success) {
-                              // Map results back to full website objects
-                              const resultUrls = new Set(data.results.map((r: any) => r.url));
-                              let filtered = websites.filter(w => resultUrls.has(w.url));
-                              
-                              // Sort by similarity
-                              const urlToSimilarity = new Map(
-                                data.results.map((r: any) => [r.url, r.similarity])
-                              );
-                              filtered.sort((a, b) => 
-                                (urlToSimilarity.get(b.url) || 0) - (urlToSimilarity.get(a.url) || 0)
-                              );
-                              
-                              setFilteredWebsites(filtered);
-                            }
-                          } catch (error) {
-                            console.error('Image search failed:', error);
-                            alert('Image search failed. Make sure the backend is running.');
-                          }
-                          setSearching(false);
+                          // Create preview URL and trigger search via useEffect
+                          const previewUrl = URL.createObjectURL(file);
+                          setUploadedImage(previewUrl);
                         }
                       }}
                     />
@@ -247,6 +290,8 @@ function App() {
                     onClick={() => {
                       setSearchOpen(false);
                       setSearchQuery("");
+                      setUploadedImage(null);
+                      setFilteredWebsites(websites);
                     }}
                   >
                     {/* <img src="/svgs/EFL03_X.svg" className="w-5 h-5" alt="Close" /> */}
@@ -257,10 +302,12 @@ function App() {
             ) : (
               /* Closed state - just show search icon */
               <button 
-                className="ml-auto h-full flex items-center"
+                className="w-full h-full flex items-center"
                 onClick={() => setSearchOpen(true)}
               >
-                <Search className="w-9 h-9 text-black" strokeWidth={1} />
+                <span className="ml-auto">
+                  <Search className="w-9 h-9 text-black" strokeWidth={1} />
+                </span>
               </button>
             )}
           </div>

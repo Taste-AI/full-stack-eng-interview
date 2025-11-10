@@ -22,10 +22,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load CLIP model
+# Load CLIP model with GPU support
 print("Loading CLIP model...")
-model = SentenceTransformer('clip-ViT-B-32')
-print("✓ Model loaded")
+import torch
+device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+model = SentenceTransformer('clip-ViT-B-32', device=device)
+print(f"✓ Model loaded on device: {device}")
 
 # Load pre-computed embeddings
 embeddings_path = Path(__file__).parent / "embeddings.json"
@@ -103,6 +105,9 @@ async def search_image(
         image_data = await image.read()
         pil_image = Image.open(io.BytesIO(image_data))
         
+        # Resize to CLIP's expected size for faster encoding
+        pil_image = pil_image.resize((224, 224), Image.Resampling.LANCZOS)
+        
         print(f"Image search: {image.filename}")
         
         # Generate image embedding
@@ -115,6 +120,50 @@ async def search_image(
             "success": True,
             "results": top_k,
             "total": len(embeddings_data)
+        }
+        
+    except Exception as e:
+        print(f"✗ Error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/search-combined")
+async def search_combined(
+    image: UploadFile = File(...),
+    text_query: str = "",
+    k: int = 12
+):
+    """
+    Search using both image and text (combines embeddings)
+    """
+    try:
+        # Read uploaded image
+        image_data = await image.read()
+        pil_image = Image.open(io.BytesIO(image_data))
+        
+        # Resize for faster encoding
+        pil_image = pil_image.resize((224, 224), Image.Resampling.LANCZOS)
+        
+        print(f"Combined search: image={image.filename}, text='{text_query}'")
+        
+        # Generate embeddings
+        image_embedding = model.encode(pil_image)
+        
+        if text_query:
+            text_embedding = model.encode(text_query)
+            # Average the embeddings (equal weight)
+            query_embedding = (image_embedding + text_embedding) / 2
+        else:
+            query_embedding = image_embedding
+        
+        top_k = find_similar(query_embedding, k)
+        
+        print(f"✓ Found top {k} matches (best: {top_k[0]['similarity']:.3f})")
+        
+        return {
+            "success": True,
+            "results": top_k,
+            "total": len(embeddings_data),
+            "used_text": bool(text_query)
         }
         
     except Exception as e:
