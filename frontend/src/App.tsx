@@ -174,7 +174,7 @@ function App() {
     };
 
     // Minimal debounce (just to batch rapid typing)
-    const timeoutId = setTimeout(performSearch, 15);
+    const timeoutId = setTimeout(performSearch, 5);
     
     return () => {
       clearTimeout(timeoutId);
